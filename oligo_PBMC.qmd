@@ -1,0 +1,1310 @@
+---
+title: "Oligo PBMC paper rebuttal"
+date: 04 Dec 2024
+title-block-banner: true
+author: 
+  - name: Chen Zhan
+    email: chen.zhan@adelaide.edu.au
+    affiliation:
+      - id: sgc
+        name: SAiGENCI, The University of Adelaide
+format: 
+  html:
+    theme: minty
+    df-print: paged
+    code-line-numbers: true
+    embed-resources: true
+knitr:
+  opts_chunk: 
+    message: false
+    warning: false
+    echo: false
+comments:
+  hypothesis: 
+    theme: clean
+editor: source
+abstract: |
+  Benign data projection over cancer data
+  
+  #1 Cancer data in Seurat format with PCA - blood tissue
+  #2 healthy data healty_preprint: 3 samples from preprint - female
+  #3 Norm data healty_cellxgene: 12 samples, 5 datasets from cellNexus
+  #4 Atlas breast - cancer and healthy samples from breast tissue
+  
+  # Preliminary check count data from all 3 datasets
+  # Merge healthy data healty_preprint and healty_cellxgene
+  # Projecting merged healthy data H into PCA from cancer data
+  # Lable transfer from Cancer data
+---
+
+```{r setup, include=FALSE}
+# knitr::opts_knit$set(root.dir = '../../')
+```
+
+# Library
+
+```{r}
+library(zellkonverter)
+library(SummarizedExperiment)
+library(tidyverse)
+library(magrittr)
+library(tidyomics)
+library(Seurat)
+library(ggplot2)
+library(plotly)
+library(patchwork)
+library(Azimuth)
+```
+
+# Load dataset
+
+## Cancer data -blood tissue
+
+```{r}
+cancer_seurat_with_PCA <- readRDS("~/R/SAiGENCI/oligo_rebuttal_data/cancer_seurat_with_PCA.rds")
+
+cancer_seurat_with_PCA@meta.data$cell_type_for_label_tranfer[cancer_seurat_with_PCA@meta.data$cell_type_for_label_tranfer %in% c("CD4 cm high cytokine", "CD4 cm ribosome", "CD4 cm S100A4")] = 'CD4 cm'
+
+cancer_seurat_with_PCA@meta.data$cell_type_for_label_tranfer[cancer_seurat_with_PCA@meta.data$cell_type_for_label_tranfer %in% c("CD8 em 1", "CD8 em 2", "CD8 em 3")] = 'CD8 em'
+
+```
+
+## Preprint data - healty_preprint
+
+```{r}
+adata_healty_preprint = readH5AD('~/R/SAiGENCI/oligo_rebuttal_data/healthy_adjusted_preprint_female.h5ad')
+metadata_healty_preprint = colData(adata_healty_preprint)
+assayNames(adata_healty_preprint)
+healty_preprint_matrix = assay(adata_healty_preprint, "counts")
+```
+
+## Cellxgene data - healty_cellxgene
+
+```{r}
+adata_healty_cellxgene <- readH5AD('~/R/SAiGENCI/oligo_rebuttal_data/healthy_cellxgene_female.h5ad')
+extraction = adata_healty_cellxgene |> distinct(sample_id, dataset_id, cell_annotation_azimuth_l2) |> dplyr::count(sample_id, dataset_id) |> as_tibble() |>  arrange(desc(n)) |> filter(n>15) |> dplyr::add_count(dataset_id) |> filter(nn>1)
+
+adata_healty_cellxgene = adata_healty_cellxgene %>% filter(sample_id %in% extraction$sample_id)
+
+adata_healty_cellxgene = adata_healty_cellxgene[, !adata_healty_cellxgene$cell_annotation_azimuth_l2 %>% is.na]
+
+assayNames(adata_healty_cellxgene) # check assay name
+healty_cellxgene_matrix <- assay(adata_healty_cellxgene, "counts")
+metadata_healty_cellxgene = colData(adata_healty_cellxgene)
+```
+
+# Preliminary check
+
+Percentage of Non-zero counts from cells within samples
+
+```{r}
+# Generate histograms for each sample_id and store them in a list
+hist_list_cancer <- cancer_seurat_with_PCA$sample_id %>%
+  unique() %>%
+  map(function(id) {
+    # Subset the counts data for the current sample_id
+    counts_data <- cancer_seurat_with_PCA %>%
+      GetAssay('RNA') %>%
+      GetAssayData('counts') %>%
+      .[, cancer_seurat_with_PCA$sample_id == id]
+
+    # Calculate the percentage of non-zero values for each cell
+    percent_nonzero <- apply(counts_data, 2, function(x) {
+      sum(x > 0) / length(x) * 100
+    })
+
+    # Create a ggplot histogram
+    ggplot(data.frame(percent_nonzero = percent_nonzero), aes(x = percent_nonzero)) +
+      geom_histogram(bins = 100, fill = "blue", alpha = 0.7) +
+      labs(
+        title = paste("Canceer Sample:", id),
+        x = "Percentage of Non-Zero Counts",
+        y = "Frequency"
+      ) +
+      theme_minimal()
+  })
+
+# Combine all plots into a single grid
+combined_plot_cancer <- wrap_plots(hist_list_cancer, ncol = 2) # Adjust ncol for layout
+
+hist_list_healty_preprint = metadata_healty_preprint$sample_id %>% unique() %>% map(.f = function(id){
+
+  counts_data = healty_preprint_matrix[,metadata_healty_preprint[metadata_healty_preprint$sample_id == id,] %>% row.names()]
+
+  # Calculate the percentage of non-zero values for each cell
+  percent_nonzero <- apply(counts_data, 2, function(x) {
+    sum(x > 0) / length(x) * 100
+  })
+
+  # Create a ggplot histogram
+  ggplot(data.frame(percent_nonzero = percent_nonzero), aes(x = percent_nonzero)) +
+    geom_histogram(bins = 100, fill = "blue", alpha = 0.7) +
+    labs(
+      title = paste("healty_preprint Sample:", id),
+      x = "Percentage of Non-Zero Counts",
+      y = "Frequency"
+    ) +
+    theme_minimal()
+
+})
+
+# Combine all plots into a single grid
+combined_plot_healty_preprint <- wrap_plots(hist_list_healty_preprint, ncol = 2) # Adjust ncol for layout
+
+
+hist_list_healty_cellxgene = metadata_healty_cellxgene$sample_id %>% unique() %>% map(.f = function(id){
+
+  counts_data = healty_cellxgene_matrix[,metadata_healty_cellxgene[metadata_healty_cellxgene$sample_id == id,] %>% row.names()]
+
+  # Calculate the percentage of non-zero values for each cell
+  percent_nonzero <- apply(counts_data, 2, function(x) {
+    sum(x > 0) / length(x) * 100
+  })
+
+  # Create a ggplot histogram
+  ggplot(data.frame(percent_nonzero = percent_nonzero), aes(x = percent_nonzero)) +
+    geom_histogram(bins = 100, fill = "blue", alpha = 0.7) +
+    labs(
+      title = paste("healty_cellxgene Sample:", id),
+      x = "Percentage of Non-Zero Counts",
+      y = "Frequency"
+    ) +
+    theme_minimal()
+
+})
+
+# Combine all plots into a single grid
+combined_plot_healty_cellxgene <- wrap_plots(hist_list_healty_cellxgene, ncol = 2) # Adjust ncol for layout
+
+
+combined_plot_cancer
+combined_plot_healty_preprint
+combined_plot_healty_cellxgene
+```
+
+# Merge two healthy data - healty_preprint and healty_cellxgene
+
+## Convert ensmbl id to symbol names for healty_cellxgene
+
+```{r}
+library(AnnotationDbi)
+library(org.Hs.eg.db)
+
+gene_mapping <- AnnotationDbi::select(
+  org.Hs.eg.db,
+  keys = healty_cellxgene_matrix %>% row.names(),
+  columns = c("ENSEMBL", "SYMBOL"),
+  keytype = "ENSEMBL"
+)
+
+gene_mapping = gene_mapping[!is.na(gene_mapping$SYMBOL),]
+
+# Create a lookup vector from gene_mapping
+ensembl_to_symbol <- setNames(gene_mapping$SYMBOL, gene_mapping$ENSEMBL)
+
+# Replace rownames in cellxgene_matrix
+rownames(healty_cellxgene_matrix) <- ifelse(
+  rownames(healty_cellxgene_matrix) %in% names(ensembl_to_symbol),
+  ensembl_to_symbol[rownames(healty_cellxgene_matrix)], # Replace with SYMBOL if available
+  rownames(healty_cellxgene_matrix)                    # Keep original Ensembl ID if not found
+)
+
+healty_cellxgene_matrix = healty_cellxgene_matrix[!(row.names(healty_cellxgene_matrix) %>% duplicated()),]
+
+detach("package:org.Hs.eg.db", unload = TRUE)
+detach("package:AnnotationDbi", unload = TRUE)
+
+```
+
+## Merge two matrices by overlapping genes
+
+```{r}
+H_matrix = merge(healty_preprint_matrix, healty_cellxgene_matrix, by.x = 'row.names' , by.y = 'row.names')
+row.names(H_matrix) = H_matrix$Row.names
+H_matrix = H_matrix %>% dplyr::select(!Row.names)
+
+H_seurat = CreateSeuratObject(counts = H_matrix)
+
+```
+
+# Projection to cancer data - blood tissue
+
+```{r}
+
+anchors <- FindTransferAnchors(
+  reference = cancer_seurat_with_PCA,
+  query = H_seurat,
+  normalization.method = "SCT",
+  dims = 1:50,
+  reduction = "pcaproject"
+)
+
+# save(anchors, H_seurat, file = '~/R/SAiGENCI/oligo_rebuttal_data/anchors_for_H_merged.RData')
+
+```
+
+## Extract embedings and edit meta data
+
+```{r}
+pca_emb <- Embeddings(anchors@object.list[[1]], reduction = "pcaproject") %>% as.data.frame()
+
+pca_emb$cell_id = pca_emb %>% row.names() %>% gsub("(_reference|_query)$", "", .)
+rownames(pca_emb) = pca_emb$cell_id 
+
+# concate meta data for cancer data
+pca_emb[cancer_seurat_with_PCA@meta.data %>% row.names(),'data_origin'] = 'cancer' 
+pca_emb[cancer_seurat_with_PCA@meta.data %>% row.names(),'sample_id'] = cancer_seurat_with_PCA@meta.data$sample_id
+pca_emb[cancer_seurat_with_PCA@meta.data %>% row.names(),'disease'] = cancer_seurat_with_PCA@meta.data$disease
+pca_emb[cancer_seurat_with_PCA@meta.data %>% row.names(),'sex'] = cancer_seurat_with_PCA@meta.data$sex
+pca_emb[cancer_seurat_with_PCA@meta.data %>% row.names(),'dataset_id'] = cancer_seurat_with_PCA@meta.data$dataset_id
+pca_emb[cancer_seurat_with_PCA@meta.data %>% row.names(),'assay'] = cancer_seurat_with_PCA@meta.data$assay
+pca_emb[cancer_seurat_with_PCA@meta.data %>% row.names(),'tissue_groups'] = cancer_seurat_with_PCA@meta.data$tissue_groups
+pca_emb[cancer_seurat_with_PCA@meta.data %>% row.names(),'cell_type'] = cancer_seurat_with_PCA@meta.data$cell_type_for_label_tranfer
+
+# concate meta data for healty_preprint data
+pca_emb[metadata_healty_preprint %>% row.names(),'data_origin'] = 'healty_preprint' 
+pca_emb[metadata_healty_preprint %>% row.names(),'sample_id'] = metadata_healty_preprint$sample_id %>% as.character()
+pca_emb[metadata_healty_preprint %>% row.names(),'disease'] = metadata_healty_preprint$disease %>% as.character()
+pca_emb[metadata_healty_preprint %>% row.names(),'sex'] = metadata_healty_preprint$sex %>% as.character()
+pca_emb[metadata_healty_preprint %>% row.names(),'dataset_id'] = metadata_healty_preprint$dataset_id %>% as.character()
+pca_emb[metadata_healty_preprint %>% row.names(),'assay'] = metadata_healty_preprint$assay %>% as.character()
+pca_emb[metadata_healty_preprint %>% row.names(),'tissue_groups'] = metadata_healty_preprint$tissue_groups %>% as.character()
+
+
+# concate meta data for healty_cellxgene data
+pca_emb[metadata_healty_cellxgene %>% row.names(),'data_origin'] = 'healty_cellxgene'
+pca_emb[metadata_healty_cellxgene %>% row.names(),'sample_id'] = metadata_healty_cellxgene$sample_id %>% as.character()
+pca_emb[metadata_healty_cellxgene %>% row.names(),'disease'] = metadata_healty_cellxgene$disease %>% as.character()
+pca_emb[metadata_healty_cellxgene %>% row.names(),'sex'] = metadata_healty_cellxgene$sex %>% as.character()
+pca_emb[metadata_healty_cellxgene %>% row.names(),'dataset_id'] = metadata_healty_cellxgene$dataset_id %>% as.character()
+pca_emb[metadata_healty_cellxgene %>% row.names(),'assay'] = metadata_healty_cellxgene$assay %>% as.character()
+pca_emb[metadata_healty_cellxgene %>% row.names(),'tissue_groups'] = metadata_healty_cellxgene$tissue_groups %>% as.character()
+
+```
+
+# Load Atlas breast data and merge whole dataset
+
+```{r}
+
+atlas_breast <- readRDS("~/R/SAiGENCI/oligo_rebuttal_data/atlas_breast.rds")
+meta_atlas_breast = atlas_breast@meta.data
+meta_atlas_breast = meta_atlas_breast %>% rename(
+  sample_id = group
+)
+
+full_matrix = merge(H_matrix, cancer_seurat_with_PCA %>%
+    GetAssay('RNA') %>%
+    GetAssayData('counts'), by.x = 'row.names' , by.y = 'row.names')
+
+row.names(full_matrix) = full_matrix$Row.names
+full_matrix = full_matrix %>% dplyr::select(!Row.names)
+
+whole_matrix_sc = merge(full_matrix, atlas_breast %>%
+    GetAssay('RNA') %>%
+    GetAssayData('counts'), by.x = 'row.names' , by.y = 'row.names')
+
+row.names(whole_matrix_sc) = whole_matrix_sc$Row.names
+whole_matrix_sc = whole_matrix_sc %>% dplyr::select(!Row.names)
+
+whole_sc_seurat = CreateSeuratObject(counts = whole_matrix_sc)
+```
+
+## Annotate cell types using azimuth PBMC reference
+
+```{r}
+
+whole_azimuth = RunAzimuth(whole_sc_seurat, reference = 'pbmcref')
+# save(whole_azimuth, file = '~/R/SAiGENCI/oligo_rebuttal_data/whole_azimth.RData')
+
+load("~/R/SAiGENCI/oligo_rebuttal_data/whole_azimth.RData")
+
+DimPlot(whole_azimuth, group.by = 'predicted.celltype.l2', label = T)
+
+##### re-annotation using PBMC #####
+pca_emb = merge(pca_emb, whole_azimuth@meta.data %>% dplyr::select(predicted.celltype.l2), by = 'row.names', all.x = T)
+row.names(pca_emb) = pca_emb$Row.names
+pca_emb = pca_emb %>% dplyr::select(!Row.names)
+
+## overwrite azimuth annotation for healthy cell xgene data from embedded labels
+pca_emb[metadata_healty_cellxgene %>% rownames(), 'predicted.celltype.l2'] = metadata_healty_cellxgene$cell_annotation_azimuth_l2 %>% as.character()
+
+
+##### Set final cell type #######
+pca_emb$cell_type = pca_emb$predicted.celltype.l2
+
+
+# test #
+pca_emb$cell_type %>% is.na %>% sum()
+pca_emb$cell_type %>% unique
+```
+
+## PCA plot
+
+```{r fig.height=8, fig.width=12}
+
+library(ggplot2)
+
+# Assuming pca_emb is a data frame with the necessary columns
+ggplot(pca_emb, aes(
+  x = ProjectPC_1,
+  y = ProjectPC_2,
+  color = cell_type,       # Color points by cell type
+  shape = data_origin      # Shape points by data origin
+)) +
+  geom_point(size = 2, alpha = 0.7) + # Adjust point size and transparency
+  scale_shape_manual(values = c(16, 17, 18)) + # Customize shapes (circle, triangle)
+  labs(
+    title = "2D PCA Scatter Plot",
+    x = "Principal Component 1",
+    y = "Principal Component 2",
+    color = "Cell Type",
+    shape = "Data Origin"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "right", # Adjust legend position
+    legend.title = element_text(size = 12),
+    legend.text = element_text(size = 10)
+  )
+```
+
+## Futher run umap over 50D pca spca - Panel A
+
+```{r fig.height=8, fig.width=12}
+library(uwot)
+
+# Extract the PCA embeddings from pca_emb
+pca_data <- as.matrix(pca_emb[, paste0("ProjectPC_", 1:50)]) # Select columns for PCA embeddings
+
+# Run UMAP
+set.seed(123) # For reproducibility
+umap_result <- umap(pca_data, n_neighbors = 30, min_dist = 0.3, metric = "euclidean")
+
+# Convert UMAP result to a data frame for visualization
+umap_df <- as.data.frame(umap_result)
+colnames(umap_df) <- c("UMAP_1", "UMAP_2") # Name the UMAP dimensions
+
+# Combine UMAP results with original metadata
+umap_df <- cbind(umap_df, pca_emb[, c("cell_type", "data_origin")]) # Add metadata 
+
+umap = ggplot(umap_df, aes(x = UMAP_1, y = UMAP_2, color = cell_type, shape = data_origin)) +
+  geom_point(alpha = 0.7, size = 1.5) +
+  labs(
+    title = "UMAP of PCA Embeddings",
+    x = "UMAP Dimension 1",
+    y = "UMAP Dimension 2",
+    color = "Cell Type",
+    shape = "Data Origin"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "right",
+    legend.title = element_text(size = 12),
+    legend.text = element_text(size = 10)
+  )
+
+umap
+```
+
+# Compositional analysis
+
+## Orgnise data
+
+```{r}
+
+metadata_all = pca_emb %>% dplyr::select(!dplyr::starts_with('ProjectPC_'))
+metadata_all$disease[metadata_all$disease == 'benign'] = 'normal'
+cell_count = metadata_all %>% dplyr::group_by(sample_id, cell_type) %>% summarise(count = dplyr::n()) %>% ungroup()
+cell_count = merge(cell_count, (metadata_all %>% dplyr::select(c(sample_id, cell_type, data_origin, disease, sex, assay, tissue_groups, dataset_id)) %>% distinct()))
+
+cell_count$disease_condition = cell_count$disease
+cell_count$disease_condition[cell_count$disease_condition == 'normal'] = 'healthy'
+cell_count$disease_condition[cell_count$disease_condition %in% c('cancer', 'MBC', 'OMBC')] = 'cancer'
+
+cell_count 
+
+full_cell_type_list = cell_count$cell_type %>% unique %>% as.character()
+pheatmap_by_sample = cell_count %>% 
+  # filter(disease == 'normal') %>% 
+  group_by(sample_id) %>% summarise(n_cell_type = (full_cell_type_list %in% unique(cell_type)) %>% list()) 
+
+pheatmap_by_sample_tb = pheatmap_by_sample$n_cell_type %>% reduce(rbind)
+rownames(pheatmap_by_sample_tb) = pheatmap_by_sample$sample_id
+colnames(pheatmap_by_sample_tb) = full_cell_type_list
+
+pheatmap_by_sample_tb = pheatmap_by_sample_tb %>% as.data.frame() %>%  mutate_all(as.numeric)
+
+
+library(pheatmap)
+
+# Plot the heatmap
+ph = pheatmap(pheatmap_by_sample_tb,
+         cluster_rows = FALSE,        # Do not cluster rows (interaction)
+         cluster_cols = F,         # Cluster columns (cell types)
+         display_numbers = TRUE,      # Display TRUE/FALSE values (you can also choose numeric)
+         color = c("white", "blue"),  # Color scheme for TRUE/FALSE (1/0)
+         main = "Cell Type Representation by Sample")
+
+ph
+```
+
+## sccomp - Panel B
+
+## write sccomp_result, plots as rds to box
+
+```{r}
+library(sccomp)
+
+cell_count$disease[cell_count$disease == 'normal'] = cell_count$dataset_id[cell_count$disease == 'normal'] %>% as.factor() %>% as.numeric %>% 
+  {LETTERS[.]} %>%  # Map numbers to letters (A, B, C, etc.)
+  paste0('H', .)  # Prefix with 'H'
+
+
+sccomp_result = 
+  cell_count |>
+  # mutate(disease = fct_relevel(disease, "normal")) %>% 
+  sccomp_estimate( 
+    formula_composition = ~ 0 + disease, 
+    .sample = sample_id,
+    .cell_group = cell_type,
+    .count = count, 
+    cores = 16,
+    verbose = F
+  ) %>% 
+  # sccomp_remove_outliers(verbose = FALSE, cores = 16) %>%  # Optional
+  sccomp_test(
+    contrasts = c('cancer_minus_health' =  '(diseaseOMBC + diseaseMBC) / 2 - (diseaseHA + diseaseHB + diseaseHC +  diseaseHD + diseaseHE + diseaseHF) /6'), test_composition_above_logit_fold_change  = 0.5)
+
+```
+
+```{r fig.height=8, fig.width=12}
+
+source("~/R/SAiGENCI/oligo_PBMC/myplot_1D_intervals.R", echo=TRUE)
+sccomp_result = sccomp_result %>%
+  arrange(desc(c_effect))
+sccomp_result = sccomp_result[!sccomp_result$cell_type %in% c("ASDC", "Platelet", "Eryth", "dnT", "Plasmablast"),]
+
+
+top_and_last <- sccomp_result %>%
+  slice(c(1:5, (dplyr::n() - 4):dplyr::n())) %>%
+  mutate(position = ifelse(row_number() <= 5, "left", "right")) 
+
+sccomp_result$factor = rep('disease', nrow(sccomp_result))
+
+sccomp_boxplot = sccomp_result %>% sccomp_boxplot(factor = "disease")
+sccomp_1D_interval = sccomp_result %>%  myplot_1D_intervals()
+
+sccomp_boxplot
+
+sccomp_1D_interval[[1]][["labels"]][["title"]] = NULL
+sccomp_1D_interval = sccomp_1D_interval + geom_text(data = top_and_last, 
+             aes(label = ifelse(c_FDR < 1/4000, 
+                               "FDR: < 2.5e-4", 
+                               ifelse(c_FDR < 0.001, 
+                                      sprintf("FDR: %.1e", c_FDR),  # Use scientific notation for very small FDR
+                                      sprintf("FDR: %.3f", c_FDR))),  # Use regular decimal for larger values 
+                x = ifelse(position == "left", min(sccomp_result$c_lower) - 1, max(sccomp_result$c_upper) + 1), 
+                y = reorder(cell_type, c_effect)), 
+            size = 3, hjust = ifelse(top_and_last$position == "left", 0, 1), color = "black") +
+  theme(
+    axis.text.y = element_text(size = 7) # Adjust size of y-axis labels if needed
+  )
+
+sccomp_1D_interval
+```
+
+# Differential abundance analysis
+
+## Merge three dataset cancer - blood tissue, healty_preprint and healty_cellxgene as full_blood data
+
+```{r}
+
+full_matrix = merge(H_matrix, cancer_seurat_with_PCA %>%
+    GetAssay('RNA') %>%
+    GetAssayData('counts'), by.x = 'row.names' , by.y = 'row.names')
+
+row.names(full_matrix) = full_matrix$Row.names
+full_matrix = full_matrix %>% dplyr::select(!Row.names)
+
+
+se_object_sc = SummarizedExperiment(
+  assays = list(counts = full_matrix),
+  colData = metadata_all[colnames(full_matrix),],
+  rowData = full_matrix %>% row.names()
+)
+
+colData(se_object_sc)$disease[colData(se_object_sc)$disease == 'normal'] = colData(se_object_sc)$data_origin[colData(se_object_sc)$disease == 'normal']
+
+```
+
+## Conduct pseudobulk by aggregating
+
+```{r}
+
+cores = system("squeue --me -o '%C'", intern = TRUE)[2] %>% as.integer() 
+
+bp <- BiocParallel::MulticoreParam(workers = cores , progressbar = TRUE)
+
+# Pseudobulk
+se_object = 
+  se_object_sc |> 
+  scuttle::aggregateAcrossCells(
+    colData(se_object_sc)[,c("sample_id", "cell_type")], 
+    BPPARAM = bp, 
+    use.assay.type = "counts"
+  ) 
+
+colData(se_object) = colData(se_object)[,colData(se_object) %>% colnames() %>% unique()]
+
+```
+
+## Run test_differential_abundance
+
+```{r}
+
+colData(se_object)$assay  %<>% make.names()
+
+se_object$disease[!se_object$disease %in% c('cancer',"OMBC","MBC")] = se_object$dataset_id[!se_object$disease %in% c('cancer',"OMBC","MBC")] %>% as.factor() %>% as.numeric %>% 
+  {LETTERS[.]} %>%  # Map numbers to letters (A, B, C, etc.)
+  paste0('H', .)  # Prefix with 'H'
+
+
+# scale count data for plot
+colnames(se_object) = (se_object %>% colData())$sample_id %>%  paste0(.,'_', (se_object %>% colData())$cell_type)
+se_object_scaled = se_object %>% identify_abundant(factor_of_interest = disease) %>% scale_abundance(method = "TMMwsp")
+
+```
+
+# PCA for blood pseudobulk - blood tissue and healthy data - Panel A
+
+```{r, fig.height=10, fig.width=8}
+
+blood_cancer_and_healthy_pseudo = se_object_sc |> 
+  scuttle::aggregateAcrossCells(
+    statistics = 'mean',
+    colData(se_object_sc)[,"sample_id"], 
+    BPPARAM = bp, 
+    use.assay.type = "counts"
+  ) 
+
+
+
+colData(blood_cancer_and_healthy_pseudo) = colData(blood_cancer_and_healthy_pseudo)[,colData(blood_cancer_and_healthy_pseudo) %>% colnames() %>% unique()]
+
+blood_cancer_and_healthy_pseudo_scaled = blood_cancer_and_healthy_pseudo %>% identify_abundant(factor_of_interest = disease) %>% scale_abundance(method = "TMMwsp") %>% keep_variable(log_transform = T)
+
+se_counts = blood_cancer_and_healthy_pseudo_scaled %>% 
+  assay('counts_scaled')
+  # assay('counts')
+se_metadata = colData(blood_cancer_and_healthy_pseudo)
+
+library(FactoMineR)
+library(ggplot2)
+
+pca_result_se <- PCA(t(se_counts), scale.unit = TRUE, graph = T)
+
+pca_data_se <- as.data.frame(pca_result_se$ind$coord)  
+pca_data_se$disease <- se_metadata$disease
+# pca_data_se$cell_type = se_metadata$cell_type
+pca_data_se$dataset_id = se_metadata$data_origin 
+
+pca_data_se$disease <- factor(pca_data_se$disease, 
+                              levels = c("healty_cellxgene", 'healty_preprint', "OMBC", "MBC"), 
+                              labels = c("healthy", "healthy", "cancer", "cancer"))
+
+source("~/R/SAiGENCI/oligo_PBMC/theme_multipanel.R", echo=TRUE)
+
+pca_plot = ggplot(pca_data_se, aes(x = Dim.1, y = Dim.2, color = disease, 
+                                   # shape = disease
+                                   )) +
+  geom_point(size = 3, alpha = 0.8) +
+  labs(
+    title = NULL,
+    x = "Dim 1 (PC1)",
+    y = "Dim 2 (PC2)",
+    color = "Disease Condition",
+    # shape = "Disease Condition"
+  ) +
+  scale_color_manual(
+    # values = c("healthy" = "skyblue", "OMBC" = "orange", "MBC" = "orange")
+    values = c("healthy" = "skyblue", "cancer" = "orange")
+    ) +
+  # scale_shape_manual(
+  #   values = c("healthy" = 16, "OMBC" = 17, "MBC" = 15) # Different shapes for each disease condition
+  # ) +
+  # scale_x_continuous(trans = "log") +
+  # scale_y_continuous(trans = "log") +
+  theme_multipanel
+  # theme_minimal()
+
+pca_plot
+
+```
+
+# DE over whole dataset (blood tissue, breast tissue and two healthy data)
+
+## Merge four datasets and check cell type presence
+
+```{r}
+
+atlas_breast <- readRDS("~/R/SAiGENCI/oligo_rebuttal_data/atlas_breast.rds")
+atlas_breast_matrix =  atlas_breast %>%
+    GetAssay('RNA') %>%
+    GetAssayData('counts')
+
+se_object_atlas_breast_sc = atlas_breast %>% Seurat::as.SingleCellExperiment()
+
+colData(se_object_atlas_breast_sc)$predicted.celltype.l2 = whole_azimuth@meta.data[colData(se_object_atlas_breast_sc) %>% row.names(), 'predicted.celltype.l2']
+
+atlas_breast_pseudobulk = se_object_atlas_breast_sc %>% scuttle::aggregateAcrossCells(
+    colData(se_object_atlas_breast_sc)[,c("group", "predicted.celltype.l2")], 
+    BPPARAM = bp, 
+    use.assay.type = "counts"
+  ) 
+
+
+colData(atlas_breast_pseudobulk)$cell_type = colData(atlas_breast_pseudobulk)$predicted.celltype.l2
+
+colData(atlas_breast_pseudobulk)$sample_id = colData(atlas_breast_pseudobulk)$group
+
+
+subtype_mapping <- c(
+  "SI-GA-H1" = "ER",
+  "SI-GA-H3" = "TNBC",
+  "SI-GA-H4" = "ER",
+  "SI-GA-G6" = "TNBC",
+  "SI-GA-G7" = "TNBC",
+  "SI-GA-G8" = "HER2",
+  "SI-GA-E5" = "ER",
+  "SI-GA-G9" = "ER",
+  "SI-GA-E7" = "HER2",
+  "SI-GA-E8" = "HER2"
+)
+
+atlas_breast_pseudobulk_matrix = atlas_breast_pseudobulk %>% assay('counts') %>% as.matrix()
+
+whole_matrix = merge(se_object %>% assay('counts'), atlas_breast_pseudobulk_matrix, by.x = 'row.names' , by.y = 'row.names')
+row.names(whole_matrix) = whole_matrix$Row.names
+whole_matrix = whole_matrix %>% dplyr::select(!Row.names)
+
+colData(se_object)$subtype = colData(se_object)$sample_id %>% sapply(FUN = function(st) {
+    if (st %in% names(subtype_mapping)) {
+      return(subtype_mapping[[st]])
+    } else {
+      return(NA) # If cell type not found in the mapping
+    }
+  }
+)
+colData(se_object)$tissue = colData(se_object)$tissue_groups
+
+colData(atlas_breast_pseudobulk)$tissue = 'breast'
+colData(atlas_breast_pseudobulk)$disease = ifelse(colData(atlas_breast_pseudobulk)$clinical_profile %>% grepl('^normal', .), 'normal', 'cancer')
+colData(atlas_breast_pseudobulk)$subtype = ifelse(atlas_breast_pseudobulk$clinical_profile %>% grepl('^normal', .), NA, atlas_breast_pseudobulk$clinical_profile)
+
+colData(se_object)$dataset = colData(se_object)$data_origin
+colData(se_object)$dataset[colData(se_object)$dataset == 'cancer'] = 'cancer-blood_tissue'
+
+colData(atlas_breast_pseudobulk)$dataset = 'cancer-breast_tissue'
+colData(atlas_breast_pseudobulk)$dataset_id = 'cancer-breast_tissue'
+
+new_meta = rbind(
+  colData(se_object)[, c("sample_id", "disease", "tissue", "subtype", "cell_type",  'dataset', 'ncells', 'dataset_id')],
+  colData(atlas_breast_pseudobulk)[,c("sample_id", "disease", "tissue", "subtype", "cell_type", 'dataset', 'ncells','dataset_id')]
+)
+
+
+whole_se_object = SummarizedExperiment(
+  assays = list(counts = whole_matrix %>% as.matrix()),
+  colData = new_meta,
+  rowData = whole_matrix %>% row.names()
+)
+
+whole_seurat = CreateSeuratObject(counts = whole_matrix %>% as.matrix())
+
+
+whole_se_object$disease_broad[!whole_se_object$disease %in% c('cancer', 'OMBC', 'MBC')] = 'healthy'
+whole_se_object$disease_broad[whole_se_object$disease %in% c('cancer', 'OMBC', 'MBC')] = 'cancer'
+
+### scaling ###
+whole_se_object_scaled = whole_se_object %>%  identify_abundant(factor_of_interest = disease) %>% scale_abundance(
+  method = "TMMwsp"
+  )
+
+whole_se_object$interaction = interaction(whole_se_object$disease, whole_se_object$tissue, sep = "___", drop = TRUE)
+
+## save merged whole data ###
+saveRDS(whole_se_object_scaled, file = '~/R/SAiGENCI/oligo_rebuttal_data/whole_se_object_scaled.rds')
+
+### cell type presence heatmap ###
+
+full_cell_list = (whole_se_object %>% colData())$cell_type %>% unique
+
+summary_data <- (whole_se_object %>% colData() %>% as_tibble()) %>% dplyr::group_by(interaction) %>% summarise(cell_list = list(full_cell_list %in% unique(cell_type)))
+
+summary_tb = summary_data$cell_list %>% reduce(rbind)
+rownames(summary_tb) = summary_data$interaction
+colnames(summary_tb) = full_cell_list
+
+summary_tb = summary_tb %>% as.data.frame() %>%  mutate_all(as.numeric)
+
+library(pheatmap)
+
+# Plot the heatmap
+ph = pheatmap(summary_tb,
+         cluster_rows = FALSE,        # Do not cluster rows (interaction)
+         cluster_cols = F,         # Cluster columns (cell types)
+         display_numbers = TRUE,      # Display TRUE/FALSE values (you can also choose numeric)
+         color = c("white", "blue"),  # Color scheme for TRUE/FALSE (1/0)
+         main = "Cell Type Representation by Interaction")
+
+ph
+
+```
+
+## Run Differential Expression Analysis
+
+```{r}
+diff_res_by_cell_type_whole = (whole_se_object %>% colData())$cell_type %>% unique() %>% 
+  # setdiff(c('Mono NKG7 1')) %>% 
+  map(.f = function(c){
+    
+    message(c %>%  paste('working on',.))
+    tmp = whole_se_object[,colData(whole_se_object)$cell_type == c]
+    
+    if (
+      (tmp %>% pivot_sample() |> count(disease, tissue) %>% nrow() >=10) & # 10 combinations over HA___blood HB___blood HC___blood HD___blood HE___blood HF___blood MBC___blood OMBC___blood cancer___breast normal___breast
+        (tmp %>% pivot_sample() |> count(disease, tissue) %>% pull(n) %>% min() >= 2) # change here for mini threshold of sample size for each batch
+        ){
+      return(
+      tmp |>
+      # mutate(disease = fct_relevel(disease, "normal")) %>%
+      # mutate(disease = fct_relevel(subtype, "healthy")) %>% 
+      keep_abundant(factor_of_interest = disease_broad) %>% 
+      # resolve_complete_confounders_of_non_interest(disease, subtype)
+        
+        
+      test_differential_abundance(
+          # .formula =  ~ 0 + disease:tissue,
+          .formula = ~ 0 + interaction,
+          contrasts = c(
+            'blood' = '(interactionMBC___blood + interactionOMBC___blood)/2 - (interactionHA___blood + interactionHB___blood + interactionHC___blood + interactionHD___blood + interactionHE___blood + interactionHF___blood)/6', 
+            'breast' = 'interactioncancer___breast - interactionnormal___breast'
+            ),
+          action="get",
+          scaling_method = "TMMwsp",
+          method = 'edger_robust_likelihood_ratio'
+      )
+      )
+    }else{
+      warning(c %>% paste('skip',., 'due to single disease status'))
+    }
+  
+})
+
+# remove invalid results
+names(diff_res_by_cell_type_whole) = (whole_se_object %>% colData())$cell_type %>% unique()
+diff_res_by_cell_type_whole = diff_res_by_cell_type_whole[(diff_res_by_cell_type_whole %>% map(class) ) != 'character']
+
+
+diff_res_by_cell_type_whole = diff_res_by_cell_type_whole %>% map(.f = function(tb){
+  
+  return(tb %>% rename(
+    `logFC_blood` = `logFC___(interactionMBC___blood + interactionOMBC___blood)/2 - (interactionHA___blood + interactionHB___blood + interactionHC___blood + interactionHD___blood + interactionHE___blood + interactionHF___blood)/6`,
+    `logFC_breast` = `logFC___interactioncancer___breast - interactionnormal___breast`,
+    `FDR_blood` = `FDR___(interactionMBC___blood + interactionOMBC___blood)/2 - (interactionHA___blood + interactionHB___blood + interactionHC___blood + interactionHD___blood + interactionHE___blood + interactionHF___blood)/6`,
+    `FDR_breast` = `FDR___interactioncancer___breast - interactionnormal___breast`
+  ))
+  
+})
+
+
+diff_res_by_cell_type_whole = diff_res_by_cell_type_whole %>% map(.f = function(tb){
+  
+  return(tb %>% mutate(
+    `FDR_blood` = `FDR_blood` %>% p.adjust(method = 'BH'),
+    `FDR_breast` = `FDR_breast` %>% p.adjust(method = 'BH')
+  ))
+  
+})
+```
+
+## Scatterplots
+
+```{r fig.height=12, fig.width=12}
+
+s = 2.5
+
+# Combine all data frames into one with a cell type column
+combined_df <- diff_res_by_cell_type_whole %>%
+  map2_dfr(., names(.), ~mutate(.x, cell_type = .y))
+
+DE_result_tb = combined_df
+
+DE_result_tb <- DE_result_tb %>%
+  mutate(
+    color = case_when(
+      `FDR_blood` < 0.01 &
+      `FDR_breast` < 0.01 ~ "red",    # Both < 0.01
+      `FDR_blood` < 0.01 |
+      `FDR_breast` < 0.01 ~ "blue",   # Either < 0.01
+      TRUE ~ "black"                                                                        # None < 0.01
+    ),
+    show_label = case_when(
+      # Both logFC conditions > 5 or both < -5
+      (`logFC_blood` >= s & 
+       `logFC_breast` >= s) |
+      (`logFC_blood` <= -s & 
+       `logFC_breast` <= -s) ~ TRUE,
+      TRUE ~ FALSE # Default: no label
+    )
+  )
+
+library(ggrepel)
+
+
+transcripts_to_label <- c('ATP5MPL', 'CD36', 'G0S2', 'GRK3', 'OTULINL', 'SOD2')
+
+# Create the faceted scatter plot
+fc_scatter_plot = ggplot(DE_result_tb, aes(x = `logFC_blood`, 
+               y = `logFC_breast`,
+               color = color,
+               label = transcript)) +
+  # geom_point(size = 1, alpha = 0.8) +
+  # Ensure red dots on top, followed by blue and black
+  geom_point(data = DE_result_tb %>% filter(color == "black"), size = 1, alpha = 0.8) +
+  geom_point(data = DE_result_tb %>% filter(color == "blue"), size = 1, alpha = 0.8) +
+  geom_point(data = DE_result_tb %>% filter(color == "red"), size = 1, alpha = 0.8) +
+  geom_text_repel(
+    data = DE_result_tb %>%
+  filter(transcript %in% transcripts_to_label | show_label == T), 
+    aes(label = transcript), 
+    size = 3,                 # Adjust font size
+    box.padding = 0.5,        # Space around label box
+    point.padding = 0.8,      # Space between point and label
+    direction = "both",       # Allow repelling in both directions
+    nudge_x = 0.25,           # Nudge labels horizontally (optional)
+    nudge_y = 0.25,           # Nudge labels vertically (optional)
+    min.segment.length = 0.2, # Ensure connecting lines are drawn
+    segment.color = "gray",   # Color of connecting lines
+    segment.size = 0.5,       # Thickness of connecting lines
+    force = 100               # Strong repelling force to move labels away from dense areas
+  ) +
+  labs(x = "logFC (PBMC: Cancer - Healthy)", 
+       y = "logFC (Breast: Cancer - Healthy)",
+       color = "FDR Threshold:\n- Red: Both < 0.01\n- Blue: Either blood or breast tissue < 0.01\n- Black: None < 0.01") +
+  # Horizontal line for y = s where x > s
+  geom_segment(aes(x = s, xend = Inf, y = s, yend = s), linetype = "dashed", color = "grey") +
+  # Horizontal line for y = -s where x < -s
+  geom_segment(aes(x = -Inf, xend = -s, y = -s, yend = -s), linetype = "dashed", color = "grey") +
+  # Vertical line for x = s where y > s
+  geom_segment(aes(x = s, xend = s, y = s, yend = Inf), linetype = "dashed", color = "grey") +
+  # Vertical line for x = -s where y < -s
+  geom_segment(aes(x = -s, xend = -s, y = -Inf, yend = -s), linetype = "dashed", color = "grey") +
+  theme_bw() +
+  # theme_multipanel +
+  facet_wrap(
+    ~ cell_type, 
+    strip.position = "top" # Move facet titles to the bottom
+  ) +
+  theme(
+    strip.background = element_blank(), # Optional: remove the background of facet labels
+    strip.text = element_text(size = 10, face = "bold"), # Optional: style the facet titles
+    axis.text.x = element_text(margin = margin(t = 10)), # Add margin above x-axis labels
+    strip.placement = "outside", # Move axis lines inside facets
+    panel.grid = element_blank() 
+  ) +
+  scale_color_manual(values = c("black" = "black", "blue" = "blue", "red" = "red")) +
+  guides(color = "none")
+
+fc_scatter_plot
+```
+
+## Panel- E: Boxplot showing top differentially expressed genes (up and down) and cell types
+
+```{r fig.height=12, fig.width=8}
+
+ps = s
+ns = -s
+
+combined_df %>% filter(
+  (
+    `logFC_blood` >= ps & `logFC_breast` >= ps
+  ) |
+    (
+      `logFC_blood` <= ns &
+        `logFC_breast` <= ns
+    )
+) %>% group_by(cell_type) %>% summarise(n_gene = dplyr::n(), .groups = "drop")
+  
+
+# Set thresholds
+fdr_threshold <- 0.01
+
+
+extreme_fc_df <- combined_df %>%
+  filter(
+    `FDR_blood` < fdr_threshold &
+    `FDR_breast` < fdr_threshold &(
+    (`logFC_blood` > 0 &
+       `logFC_breast` > 0) |
+      (`logFC_blood` < 0 &
+       `logFC_breast` < 0)
+      )
+      ) %>%
+  rowwise() %>%
+  mutate(
+    max_abs_logFC = max(
+      abs(`logFC_blood`),
+      abs(`logFC_breast`)
+    )
+  ) %>% 
+  # mutate(cell_type = cell_type |> as.factor() |> fct_reorder("CD14 mono")) |>
+  arrange(cell_type, desc(max_abs_logFC)) 
+
+# Select top 6 positive and top 6 negative rows
+extreme_fc_df <- extreme_fc_df %>%
+  filter(logFC_blood > 0) %>% 
+  head(6) %>%
+  bind_rows(
+    extreme_fc_df %>%
+      filter(logFC_blood < 0) %>%
+      head(6)
+  ) %>% ungroup() %>% dplyr::select(transcript, cell_type)
+
+extreme_fc_df$direction = c(rep('up', 6), rep('down', 6))
+
+
+
+tx_list = extreme_fc_df %>% pmap(.f = function(transcript, cell_type, direction){
+  
+  # Print the current combination for debugging
+    print(paste("Filtering for Transcript:", transcript, "Cell Type:", cell_type))
+    
+    # Perform filtering
+    tmp <- whole_se_object_scaled %>%
+      .[rownames(whole_se_object_scaled) == transcript, ] %>% filter(cell_type == !!cell_type) %>%
+      # filter(cell_type == !!cell_type, .feature == !!transcript) %>%
+      dplyr::select(disease, tissue, counts_scaled) %>%
+      as_tibble()
+    
+    return(tmp)
+  
+})
+
+extreme_fc_df <- extreme_fc_df %>%
+  mutate(tx = tx_list)
+
+extreme_fc_df = extreme_fc_df %>%
+  unnest(tx)
+
+library(scales)
+
+extreme_fc_df$disease[!extreme_fc_df$disease %in% c('cancer', 'OMBC', 'MBC')] = 'healthy'
+extreme_fc_df$disease[extreme_fc_df$disease %in% c('cancer', 'OMBC', 'MBC')] = 'cancer'
+
+extreme_fc_df$disease = factor(extreme_fc_df$disease, levels = c("healthy", "cancer"))
+
+extreme_fc_df <- extreme_fc_df %>%
+  mutate(
+    direction = factor(direction, levels = c("up", "down"))  # Custom order: "up" first, then "down"
+  )
+
+extreme_fc_plot = ggplot(extreme_fc_df, aes(x = disease, y = counts_scaled + 1, fill = disease)) +
+  geom_boxplot(outlier.shape = NA, alpha = 0.8) +  # Boxplot with transparency
+  geom_jitter(width = 0.2, alpha = 0.6, shape = 21, size = 1.5) +  # Jittered points
+  scale_y_log10(
+    breaks = c(1, 10, 100, 1000, 10000, 100000),  # Define breaks explicitly
+    labels = label_number(scale_cut = cut_short_scale())  # Format labels as plain numbers
+  ) +  # Logarithmic scale for y-axis
+  facet_grid(tissue ~ direction + cell_type + transcript, scales = "free", switch = "y") + scale_fill_manual(values = c("healthy" = "skyblue", "cancer" = "orange")) +  # Match color scheme
+  labs(
+    x = "",  # Remove x-axis label
+    y = "Pseudo-bulk scale transcript abundance (log10 + 1)",
+    title = "PBMC-derived metastatic signature"
+  ) +
+  theme_bw() +
+  theme(
+    strip.text.x = element_text(size = 10, face = "bold"),  # Bold facet labels for columns
+    strip.text.y = element_text(size = 10, face = "bold"),  # Bold facet labels for rows
+    axis.text.x = element_text(angle = 45, hjust = 1),  # Rotate x-axis labels for readability
+    axis.text.y = element_text(size = 8),  # Adjust y-axis text size
+    # legend.position = "right",  # Add legend on the right
+    legend.position = "none",
+    panel.grid = element_blank(),  # Remove gridlines for a clean look
+    panel.border = element_rect(color = "black", size = 0.5),  # Border around panels
+    plot.title = element_text(size = 14, face = "bold", hjust = 0)  # Bold and left-align the title
+  )
+
+extreme_fc_plot
+```
+
+# Abundance of cell type by samples - Panel C
+
+```{r}
+
+whole_metadata = whole_se_object %>% colData() %>% as.data.frame()
+
+abundance_df = whole_metadata %>% group_by(sample_id, cell_type, disease) %>% summarise(sum(ncells))
+abundance_df = abundance_df %>% rename('n_of_cell_by_type' = `sum(ncells)`)
+ 
+abundance_df2 =  abundance_df %>% group_by(sample_id, disease) %>% summarise(sum(n_of_cell_by_type))
+abundance_df2 = abundance_df2 %>% rename('n_of_cell' = 'sum(n_of_cell_by_type)')
+ 
+abundance_df = merge(abundance_df, abundance_df2, all.x = T)
+abundance_df$p = abundance_df$n_of_cell_by_type / abundance_df$n_of_cell
+
+abundance_df$disease[abundance_df$disease != 'cancer'] = 'healthy'
+
+# Ensure 'disease' is a factor and levels are ordered with "healthy" before "cancer"
+abundance_df$disease <- factor(abundance_df$disease, levels = c("healthy", "cancer"))
+
+
+# Custom Arcsin-Squareroot transformation
+arcsin_sqrt_trans <- scales::trans_new(
+  name = "arcsin_sqrt",
+  transform = function(x) asin(sqrt(x)),  # Apply arcsin-sqrt transformation
+  inverse = function(x) (sin(x))^2       # Inverse of arcsin-sqrt transformation
+)
+
+# Generate the plot
+cell_comp_plot = ggplot(abundance_df, aes(x = cell_type, y = p, fill = disease)) +
+  geom_boxplot(outlier.shape = NA, alpha = 0.8) +  # Boxplot without outliers
+   geom_jitter(size = 0.5, alpha = 0.6, position = position_jitterdodge(jitter.width = 0.1, dodge.width = 0.6)) +  # Reduce jitter and adjust dodge
+  scale_fill_manual(values = c("healthy" = "skyblue", "cancer" = "orange"), name = "Condition") +  # Custom color scheme
+  geom_vline(xintercept = seq(1.5, length(unique(abundance_df$cell_type)) - 0.5, 1),
+             linetype = "dashed", color = "gray", size = 0.5) +  # Add vertical dashed lines
+  scale_y_continuous(
+    trans = arcsin_sqrt_trans,  # Apply the custom transformation
+    breaks = c(0, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5),  # Custom breaks
+    limits = c(0, 0.5)  # Set axis limits
+  )  +
+  labs(
+    x = NULL,  # Remove x-axis label
+    y = "Cell composition (Arcsin-Squareroot transformed)",
+    title = "Cell Composition by Disease and Cell Type"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 10),  # Rotate x-axis labels for better readability
+    axis.text.y = element_text(size = 10),  # Adjust y-axis text size
+    plot.title = element_text(size = 14, face = "bold", hjust = 0),  # Bold and left-aligned title
+    legend.position = "top",  # Place legend at the top
+    panel.grid.major.y = element_blank(),  # Remove major horizontal grid lines
+    panel.grid.minor.y = element_blank(),  # Remove minor horizontal grid lines
+    panel.grid.major.x = element_blank(),  # Remove major vertical grid lines
+    panel.grid.minor.x = element_blank(),   # Remove minor vertical grid lines
+    panel.border = element_blank(),  # Remove panel border
+    axis.line.x = element_line(color = "black", size = 0.3),  # Add bottom x-axis line
+    axis.line.y = element_line(color = "black", size = 0.5)   # Add left y-axis line
+  )
+
+cell_comp_plot
+```
+
+# Heatmap of gene expression. Top changes in all population, just for blood, logFC\>2 FDR \< 0.01
+
+```{r}
+
+combined_df_blood = combined_df %>% filter(`FDR_blood` < 1/4000) %>% arrange(desc(logFC_blood))
+
+
+max_row = 100
+min((combined_df_blood$logFC_blood > 0) %>% sum,  max_row/2)
+gene_celltype_map = combined_df_blood %>% dplyr::select(transcript, cell_type) %>% head(min((combined_df_blood$logFC_blood > 0) %>% sum,  max_row/2))
+
+gene_celltype_map = gene_celltype_map %>% rbind(
+  combined_df_blood %>% dplyr::select(transcript, cell_type) %>% tail(max_row - min((combined_df_blood$logFC_blood > 0) %>% sum,  max_row/2))
+)
+
+
+colnames(gene_celltype_map) <- c(".feature", "cell_type")
+
+print(nrow(gene_celltype_map))
+
+
+expression_df = whole_se_object_scaled %>% filter(tissue == 'blood') %>%  inner_join(gene_celltype_map) %>% as_tibble() %>% dplyr::select(
+  .feature,
+  cell_type,
+  counts_scaled,
+  disease_broad,
+  sample_id
+)
+colnames(expression_df) = c(
+  'gene', 'cell_type', 'Expression', 'disease' , 'sample' 
+)
+
+expression_df$gene_cell_type = paste0(expression_df$gene, '_',expression_df$cell_type) %>% as.factor() 
+
+expression_df$disease <- factor(expression_df$disease, levels = c("healthy", "cancer"))
+
+expression_df$sample_disease = paste0(expression_df$sample, '_',expression_df$disease) %>% as.factor()
+
+
+
+library(ComplexHeatmap)
+library(RColorBrewer)
+library(tidyHeatmap)
+
+# Create a heatmap for each cell type using tidyHeatmap
+hm = expression_df %>% as_tibble() %>% 
+  group_by(disease, cell_type) %>%
+   heatmap(
+    .row = gene_cell_type,
+    .column = sample_disease,
+    .value = Expression,
+    scale = "row",
+    palette_value = circlize::colorRamp2(
+            seq(2, -2, length.out = 11),
+            RColorBrewer::brewer.pal(11, "RdBu")
+        ),
+    show_row_dend = T,
+    cluster_rows = T,
+    show_column_names = F,
+    row_title = NULL,
+    row_dend_reorder = F,
+    column_title = NULL, 
+    transform = log1p,
+    heatmap_legend_param = list(
+      at = c(-2, 2), 
+      labels = gt_render(c("low", "high")),
+      direction = "horizontal"
+    ),
+    column_dend_height = unit(0.3, "cm"), 
+    row_dend_width = unit(0.2, "cm")
+  ) 
+  
+
+row.names(hm@input[[1]]) = hm@input[[1]] %>% row.names() %>% gsub("_.*", "", .)
+colnames(hm@input[[1]]) = hm@input[[1]] %>% colnames() %>% gsub("_.*", "", .)
+
+hm = hm %>% as_ComplexHeatmap() %>%
+    ComplexHeatmap::draw(heatmap_legend_side = "bottom")
+
+hm
+```
+
+# UpSet plot-using blood tissue data
+
+```{r}
+
+
+se_object_scaled$disease_broad[!se_object_scaled$disease %in% c('cancer', 'OMBC', 'MBC')] = 'healthy'
+whole_se_object$disease_broad[!se_object_scaled$disease %in% c('cancer', 'OMBC', 'MBC')] = 'cancer'
+
+diff_res_by_cell_type_blood = (whole_se_object %>% filter(tissue == 'blood') %>% colData())$cell_type %>% unique() %>%
+  
+  map(.f = function(c){
+
+    message(c %>%  paste('working on',.))
+    tmp = (whole_se_object %>% filter(tissue == 'blood'))[,colData(whole_se_object %>% filter(tissue == 'blood'))$cell_type == c]
+
+    if (
+      (tmp %>% pivot_sample() |> count(disease) %>% nrow() >=8) & # 4 status, "HE"   "HF"   "HD"   "HC"   "HB"   "HA"   "OMBC" "MBC" 
+        (tmp %>% pivot_sample() |> count(disease) %>% pull(n) %>% min() >= 2) # change here for mini threshold of sample size
+        ){
+      return(
+      tmp |>
+      # mutate(disease = fct_relevel(disease, "normal")) %>%
+      # mutate(disease = fct_relevel(subtype, "healthy")) %>%
+      keep_abundant(factor_of_interest = disease_broad) %>%
+      # resolve_complete_confounders_of_non_interest(disease, subtype)
+
+
+      test_differential_abundance(
+          .formula = ~ 0 + disease,
+          contrasts = '(diseaseOMBC + diseaseMBC) / 2 - (diseaseHA + diseaseHB + diseaseHC + diseaseHD + diseaseHE + diseaseHF) /6',
+          action="get",
+          scaling_method = "TMMwsp",
+          method = 'edger_robust_likelihood_ratio'
+      )
+      )
+    }else{
+      warning(c %>% paste('skip',., 'due to single disease status'))
+    }
+
+})
+
+# remove invalid results
+names(diff_res_by_cell_type_blood) = ((whole_se_object %>% filter(tissue == 'blood') %>% colData())$cell_type %>% unique())
+diff_res_by_cell_type_blood = diff_res_by_cell_type_blood[(diff_res_by_cell_type_blood %>% map(class) ) != 'character']
+
+
+diff_res_by_cell_type_blood = diff_res_by_cell_type_blood %>% map(.f = function(tb){
+  
+  return(tb %>% rename(
+    `logFC_blood` = `logFC___(diseaseOMBC + diseaseMBC) / 2 - (diseaseHA + diseaseHB + diseaseHC + diseaseHD + diseaseHE + diseaseHF) /6`,
+    `FDR_blood` = `FDR___(diseaseOMBC + diseaseMBC) / 2 - (diseaseHA + diseaseHB + diseaseHC + diseaseHD + diseaseHE + diseaseHF) /6`
+  ))
+  
+})
+
+diff_res_by_cell_type_blood = diff_res_by_cell_type_blood %>% map(.f = function(tb){
+  
+  return(tb %>% mutate(
+    `FDR_blood` = `FDR_blood` %>% p.adjust(method = 'BH')
+  ))
+  
+})
+
+upset_df = diff_res_by_cell_type_blood %>% map(function(df){
+  
+  df %>% filter(
+    abs(`logFC_blood`) > 2 & `FDR_blood` < 0.01
+    ) %>% pull(transcript)
+  
+}) %>% 
+  stack() %>% rename(Gene = values, CellType = ind) %>% 
+  mutate(Presence = 1) %>%  # Add indicator column
+  pivot_wider(
+    names_from = CellType,
+    values_from = Presence,
+    values_fill = list(Presence = 0)  # Fill missing combinations with 0
+  )
+
+library(UpSetR)
+library(grid)
+library(gridExtra)
+
+
+library(ggupset)
+
+# Convert upset_df to a long format suitable for ggupset
+upset_long <- upset_df %>%
+  as.data.frame() %>%
+  tidyr::pivot_longer(
+    cols = -Gene, # Exclude the "Gene" column from pivoting
+    names_to = "Set",
+    values_to = "Membership"
+  ) %>%
+  filter(Membership == 1) %>% # Retain only entries where Membership is 1
+  group_by(Gene) %>%
+  summarise(Sets = list(Set)) # Group by Gene and collect the sets as a list
+
+
+# Set a threshold to show only the top sets (e.g., top 15 based on counts)
+top_threshold <- 15
+upset_top <- upset_long %>%
+  count(Sets, sort = TRUE) %>%  # Count the occurrences of each set
+  slice_max(n, n = top_threshold) %>%  # Select the top sets based on counts
+  pull(Sets)  # Extract the top set names
+
+# Filter the original dataset for the top sets
+upset_long_filtered <- upset_long %>%
+  filter(Sets %in% upset_top)
+
+# Create an UpSet plot with ggupset
+upset_plot <- ggplot(upset_long_filtered, aes(x = Sets)) +
+  geom_bar() +
+  scale_x_upset() +
+  labs(
+    # title = "UpSet Plot",
+    x = NULL,
+    y = "Number of differentially expressed genes"
+  ) +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank() # Remove the grey grid
+  )
+
+upset_plot
+```
