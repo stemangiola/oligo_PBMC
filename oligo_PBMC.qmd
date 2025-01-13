@@ -479,11 +479,13 @@ sccomp_result =
 
 ```{r fig.height=8, fig.width=12}
 
+source("~/R/SAiGENCI/oligo_PBMC/cell_color.R", echo=TRUE)
+
 source("~/R/SAiGENCI/oligo_PBMC/myplot_1D_intervals.R", echo=TRUE)
 sccomp_result = sccomp_result %>%
   arrange(desc(c_effect))
-sccomp_result = sccomp_result[!sccomp_result$cell_type %in% c("ASDC", "Platelet", "Eryth", "dnT", "Plasmablast"),]
 
+sccomp_result = sccomp_result[!sccomp_result$cell_type %in% c("ASDC", "Platelet", "Eryth", "dnT", "Plasmablast"),]
 
 top_and_last <- sccomp_result %>%
   slice(c(1:5, (dplyr::n() - 4):dplyr::n())) %>%
@@ -497,7 +499,10 @@ sccomp_1D_interval = sccomp_result %>%  myplot_1D_intervals()
 sccomp_boxplot
 
 sccomp_1D_interval[[1]][["labels"]][["title"]] = NULL
-sccomp_1D_interval = sccomp_1D_interval + geom_text(data = top_and_last, 
+sccomp_1D_interval = sccomp_1D_interval + geom_point(aes(color = cell_type), size = 3) +  # Add color to dots based on cell type
+  scale_color_manual(
+    values = color_array  # Use the color array to map colors to cell types
+  ) + geom_text(data = top_and_last, 
              aes(label = ifelse(c_FDR < 1/4000, 
                                "FDR: < 2.5e-4", 
                                ifelse(c_FDR < 0.001, 
@@ -617,7 +622,7 @@ source("~/R/SAiGENCI/oligo_PBMC/theme_multipanel.R", echo=TRUE)
 pca_plot = ggplot(pca_data_se, aes(x = Dim.1, y = Dim.2, color = disease, 
                                    # shape = disease
                                    )) +
-  geom_point(size = 3, alpha = 0.8) +
+  geom_point(size = 6, alpha = 0.8) +
   labs(
     title = NULL,
     x = "Dim 1 (PC1)",
@@ -1038,11 +1043,131 @@ extreme_fc_plot = ggplot(extreme_fc_df, aes(x = disease, y = counts_scaled + 1, 
 extreme_fc_plot
 ```
 
+## Fig-2 Panel B
+
+```{r}
+
+signature_genes <- combined_df %>%
+  filter(
+    `FDR_blood` < fdr_threshold &
+    `FDR_breast` < fdr_threshold &(
+    (`logFC_blood` > 0 &
+       `logFC_breast` > 0) |
+      (`logFC_blood` < 0 &
+       `logFC_breast` < 0)
+      )
+      ) %>%
+  rowwise() %>%
+  mutate(
+    max_abs_logFC = max(
+      abs(`logFC_blood`),
+      abs(`logFC_breast`)
+    )
+  ) %>% 
+  # mutate(cell_type = cell_type |> as.factor() |> fct_reorder("CD14 mono")) |>
+  arrange(cell_type, desc(max_abs_logFC)) 
+
+# Select top 6 positive and top 6 negative rows
+signature_genes <- signature_genes %>%
+  filter(logFC_blood > 0) %>% 
+  head(6) %>%
+  bind_rows(
+    signature_genes %>%
+      filter(logFC_blood < 0) %>%
+      head(6)
+  ) %>% ungroup() %>% dplyr::select(transcript) %>% rename(.feature = transcript)
+
+signature_genes$direction = c(rep('up', 6), rep('down', 6))
+
+
+signature_tx_df = whole_se_object_scaled %>% filter(disease_broad == 'cancer' & !cell_type %in% c("ASDC", "Platelet", "Eryth", "dnT", "Plasmablast")) %>%  inner_join(signature_genes) %>% as_tibble() 
+
+# signature_tx_df = signature_tx_df %>% filter(!cell_type %in% c("ASDC", "Platelet", "Eryth", "dnT", "Plasmablast"))
+
+signature_tx_df$.feature = signature_tx_df$.feature %>% factor(levels = signature_genes$.feature)
+
+signature_tx_df$cell_type = signature_tx_df$cell_type %>% as.factor()
+
+# Create the plot
+gene_plot <- ggplot(signature_tx_df, aes(x = cell_type, y = counts_scaled , fill = cell_type)) +
+  geom_bar(stat = "identity", alpha = 0.8) +  # Vertical bars
+  geom_text(
+    data = signature_tx_df %>%
+  distinct(.feature),
+    aes(x = 0.5, y = Inf , label = .feature),  # Add gene labels inside the panels
+    inherit.aes = FALSE,
+    hjust = 0, vjust = 1, size = 3, fontface = "plain"
+  ) +
+  facet_grid(.feature ~ ., scales = "free_y") +  # Each gene in its own row using facet_grid
+  scale_fill_manual(
+    values = color_array,
+    labels = signature_tx_df$cell_type %>% levels %>% paste0(1:(signature_tx_df$cell_type %>% levels %>% length), ". ", .),
+    guide = guide_legend(nrow = 5, override.aes = list(fill = NA, color = NA))  # Remove color swatches
+  ) +
+  scale_x_discrete(
+    labels = function(x){
+      which(x == levels(signature_tx_df$cell_type))
+    },
+  ) +
+  scale_y_continuous(
+  labels = function(x) x / 10000,  # Divide labels by 1000
+  breaks = scales::pretty_breaks(n = 3),  # Define the number of breaks
+  name = "Transcript Abundance (in 10K)"  # Update y-axis label
+) +
+  labs(
+    x = "PBMC Cell Clusters (Cancer)",
+    y = "Transcript Abundance",
+    fill = 'Cell Cluster'
+  ) +
+  theme_bw() +
+  theme(
+    # strip.text.y = element_text(size = 10, face = "bold"),
+    strip.text.y = element_blank(),  # Hide default facet labels
+    # axis.text.x = element_text(hjust = 1, size = 8),  # Rotate x-axis labels for readability
+    # axis.text.y = element_text(size = 7),  # Adjust y-axis text size
+    # legend.position = "none",  # Remove legend
+    # text = element_text(face = "plain")  # Ensure all text is plain
+    
+    panel.border = element_blank(),
+    axis.line = element_line(size=0.1),
+    panel.grid.major = element_blank(), 
+    panel.grid.minor = element_blank(),
+    legend.position = "bottom",
+    strip.background = element_blank(),
+    # axis.title.y = element_text(margin = margin(t = 0, r = 0, b = 0, l = 0), size = 7),
+    # axis.title.x = element_text(margin = margin(t = 0, r = 0, b = 0, l = 0), size = 7),
+    panel.spacing.x=unit(0.1, "lines"),
+    axis.text.x = element_text(size=10),
+    axis.text.y = element_text(size=10),
+    strip.text.x = element_text(size = 10),
+    # strip.text.y = element_text(size = 10),
+    
+    # legend
+    legend.key.size = unit(5, 'mm'),
+    legend.title = element_text(size = 10, hjust = 0, vjust = 1),
+    legend.text = element_text(size=10),
+    
+    legend.box.background = element_rect(color = "black", fill = NA, size = 0.5),  # Add rectangle around the legend
+    legend.box.margin = margin(5, 5, 5, 5),  # Add margin inside the rectangle
+    legend.key.width = unit(1.5, "cm")  # Increase legend width
+    
+    
+  )
+
+# Display the plot
+print(gene_plot)
+
+```
+
 # Abundance of cell type by samples - Panel C
 
 ```{r}
 
 whole_metadata = whole_se_object %>% colData() %>% as.data.frame()
+
+# atlas_breast_pseudobulk %>% colData() %>% as.data.frame() %>% dplyr::select(group)
+
+# whole_metadata[atlas_breast_pseudobulk %>% colData() %>% as.data.frame() %>% row.names(), 'sample_id'] = atlas_breast_pseudobulk %>% colData() %>% as.data.frame() %>% pull(group)
 
 abundance_df = whole_metadata %>% group_by(sample_id, cell_type, disease) %>% summarise(sum(ncells))
 abundance_df = abundance_df %>% rename('n_of_cell_by_type' = `sum(ncells)`)
@@ -1057,6 +1182,7 @@ abundance_df$disease[abundance_df$disease != 'cancer'] = 'healthy'
 
 # Ensure 'disease' is a factor and levels are ordered with "healthy" before "cancer"
 abundance_df$disease <- factor(abundance_df$disease, levels = c("healthy", "cancer"))
+abundance_df = abundance_df %>% filter(!cell_type %in% c("ASDC", "Platelet", "Eryth", "dnT", "Plasmablast"))
 
 
 # Custom Arcsin-Squareroot transformation
@@ -1148,6 +1274,7 @@ library(tidyHeatmap)
 # Create a heatmap for each cell type using tidyHeatmap
 hm = expression_df %>% as_tibble() %>% 
   group_by(disease, cell_type) %>%
+  # filter(gene == "MNDA") %>% 
    heatmap(
     .row = gene_cell_type,
     .column = sample_disease,
@@ -1170,17 +1297,28 @@ hm = expression_df %>% as_tibble() %>%
       direction = "horizontal"
     ),
     column_dend_height = unit(0.3, "cm"), 
-    row_dend_width = unit(0.2, "cm")
+    row_dend_width = unit(0.2, "cm"),
+    palette_grouping = list(
+            
+            color_array,
+            c("healthy" = "skyblue", "cancer" = "orange")
+
+        )
   ) 
   
+
 
 row.names(hm@input[[1]]) = hm@input[[1]] %>% row.names() %>% gsub("_.*", "", .)
 colnames(hm@input[[1]]) = hm@input[[1]] %>% colnames() %>% gsub("_.*", "", .)
 
-hm = hm %>% as_ComplexHeatmap() %>%
-    ComplexHeatmap::draw(heatmap_legend_side = "bottom")
+environment(hm@group_top_annotation[["ct"]]@fun)[["labels_gp"]][["col"]] = NA
+hm@group_left_annotation[["ct"]]@var_env[["labels_gp"]][["col"]] = NA
 
-hm
+hm = hm %>% as_ComplexHeatmap() %>%
+    ComplexHeatmap::draw(
+      heatmap_legend_side = "bottom"
+    )
+
 ```
 
 # UpSet plot-using blood tissue data
